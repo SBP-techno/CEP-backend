@@ -10,11 +10,12 @@ load_dotenv()
 class Settings(BaseSettings):
     """Application settings"""
     
-    # Database settings
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL", 
-        "postgresql://user:password@localhost:5432/energy_conservation_db"
+    # MongoDB settings
+    MONGODB_URL: str = os.getenv(
+        "MONGODB_URL", 
+        "mongodb://localhost:27017"
     )
+    DATABASE_NAME: str = os.getenv("DATABASE_NAME", "energy_conservation_db")
     
     # OpenAI settings
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")

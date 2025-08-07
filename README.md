@@ -14,17 +14,18 @@ A comprehensive REST API for energy conservation applications with AI-powered re
 ## Tech Stack
 
 - **FastAPI**: Modern Python web framework
-- **SQLAlchemy**: Async ORM with PostgreSQL
+- **MongoDB**: NoSQL database with Beanie ODM
+- **Motor**: Async MongoDB driver
 - **OpenAI API**: AI-powered energy recommendations
 - **Pydantic**: Data validation and serialization
-- **Asyncpg**: Async PostgreSQL driver
+- **Beanie**: Async MongoDB ODM
 
 ## Quick Start
 
 ### Prerequisites
 
 - Python 3.8+
-- PostgreSQL 12+
+- MongoDB 4.4+
 - OpenAI API key (optional but recommended for AI features)
 
 ### Installation
@@ -52,13 +53,17 @@ A comprehensive REST API for energy conservation applications with AI-powered re
    # Edit .env with your configuration
    ```
 
-5. **Set up database**
+5. **Set up MongoDB database**
    ```bash
-   # Create PostgreSQL database
-   createdb energy_conservation_db
+   # Install and start MongoDB (Ubuntu/Debian)
+   sudo apt install mongodb-org
+   sudo systemctl start mongod
    
-   # Update DATABASE_URL in .env file
-   DATABASE_URL=postgresql://username:password@localhost:5432/energy_conservation_db
+   # Or using Docker
+   docker run -d -p 27017:27017 --name mongodb mongo:latest
+   
+   # Initialize database with sample data
+   python create_mongodb.py --force
    ```
 
 6. **Run the application**
@@ -73,8 +78,9 @@ The API will be available at `http://localhost:8000`
 Edit the `.env` file with your settings:
 
 ```env
-# Database
-DATABASE_URL=postgresql://user:password@localhost:5432/energy_conservation_db
+# MongoDB
+MONGODB_URL=mongodb://localhost:27017
+DATABASE_NAME=energy_conservation_db
 
 # OpenAI (for AI features)
 OPENAI_API_KEY=your_openai_api_key_here
@@ -206,11 +212,11 @@ docker run -p 8000:8000 energy-conservation-api
 
 ### Production Considerations
 
-1. **Database**: Use a managed PostgreSQL service
+1. **Database**: Use MongoDB Atlas or a managed MongoDB service
 2. **Environment Variables**: Secure API keys and database credentials
 3. **Monitoring**: Add logging and health checks
 4. **Security**: Implement authentication and rate limiting
-5. **Scaling**: Consider horizontal scaling for high traffic
+5. **Scaling**: MongoDB supports horizontal scaling with sharding
 
 ## Contributing
 

@@ -1,10 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc
+from fastapi import APIRouter, HTTPException, Query
+from beanie import PydanticObjectId
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 
-from app.database import get_db
 from app.models.users import User
 from app.models.devices import Device
 from app.models.energy_data import EnergyData
@@ -16,19 +14,15 @@ router = APIRouter()
 
 @router.post("/users/{user_id}/recommendations")
 async def get_user_recommendations(
-    user_id: int,
-    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
-    db: AsyncSession = Depends(get_db)
+    user_id: PydanticObjectId,
+    days: int = Query(30, ge=1, le=365, description="Number of days to analyze")
 ) -> Dict[str, Any]:
     """Get AI-powered energy conservation recommendations for a user"""
     
     # Verify user exists
-    result = await db.execute(
-        select(User).where(User.id == user_id, User.is_active == True)
-    )
-    user = result.scalar_one_or_none()
+    user = await User.get(user_id)
     
-    if not user:
+    if not user or not user.is_active:
         raise HTTPException(status_code=404, detail="User not found")
     
     # Get user data
@@ -43,56 +37,75 @@ async def get_user_recommendations(
     end_date = datetime.utcnow()
     start_date = end_date - timedelta(days=days)
     
-    # Get aggregated energy stats
-    from sqlalchemy import func
-    result = await db.execute(
-        select(
-            func.sum(EnergyData.consumption_kwh).label("total_consumption"),
-            func.sum(EnergyData.production_kwh).label("total_production"),
-            func.sum(EnergyData.cost_usd).label("total_cost"),
-            func.avg(EnergyData.power_watts).label("avg_power"),
-            func.max(EnergyData.power_watts).label("peak_power"),
-            func.count(func.distinct(EnergyData.device_id)).label("device_count")
-        ).where(
-            and_(
-                EnergyData.user_id == user_id,
-                EnergyData.timestamp >= start_date,
-                EnergyData.timestamp <= end_date
-            )
-        )
-    )
+    # MongoDB aggregation pipeline for stats
+    pipeline = [
+        {
+            "$match": {
+                "user_id": user_id,
+                "timestamp": {"$gte": start_date, "$lte": end_date}
+            }
+        },
+        {
+            "$group": {
+                "_id": None,
+                "total_consumption": {"$sum": "$consumption_kwh"},
+                "total_production": {"$sum": "$production_kwh"},
+                "total_cost": {"$sum": "$cost_usd"},
+                "avg_power": {"$avg": "$power_watts"},
+                "peak_power": {"$max": "$power_watts"},
+                "device_count": {"$addToSet": "$device_id"}
+            }
+        },
+        {
+            "$project": {
+                "total_consumption": 1,
+                "total_production": 1,
+                "total_cost": 1,
+                "avg_power": 1,
+                "peak_power": 1,
+                "device_count": {"$size": "$device_count"}
+            }
+        }
+    ]
     
-    stats = result.first()
+    result = await EnergyData.aggregate(pipeline).to_list(length=1)
+    
+    if not result:
+        stats_data = {
+            "total_consumption_kwh": 0.0,
+            "total_production_kwh": 0.0,
+            "total_cost_usd": 0.0,
+            "average_power_watts": None,
+            "peak_power_watts": None,
+            "device_count": 0
+        }
+    else:
+        stats = result[0]
+        stats_data = {
+            "total_consumption_kwh": stats.get("total_consumption", 0.0),
+            "total_production_kwh": stats.get("total_production", 0.0),
+            "total_cost_usd": stats.get("total_cost", 0.0),
+            "average_power_watts": stats.get("avg_power"),
+            "peak_power_watts": stats.get("peak_power"),
+            "device_count": stats.get("device_count", 0)
+        }
+    
     energy_stats = EnergyStats(
-        total_consumption_kwh=stats.total_consumption or 0.0,
-        total_production_kwh=stats.total_production or 0.0,
-        total_cost_usd=stats.total_cost or 0.0,
-        average_power_watts=stats.avg_power,
-        peak_power_watts=stats.peak_power,
         period_start=start_date,
         period_end=end_date,
-        device_count=stats.device_count or 0
+        **stats_data
     )
     
     # Get user devices
-    result = await db.execute(
-        select(Device).where(Device.user_id == user_id, Device.is_active == True)
-    )
-    devices = result.scalars().all()
+    devices = await Device.find({"user_id": user_id, "is_active": True}).to_list()
     
     # Get recent energy data
-    result = await db.execute(
-        select(EnergyData)
-        .where(
-            and_(
-                EnergyData.user_id == user_id,
-                EnergyData.timestamp >= start_date
-            )
-        )
-        .order_by(desc(EnergyData.timestamp))
-        .limit(100)
-    )
-    recent_energy_data = result.scalars().all()
+    recent_energy_data = await EnergyData.find(
+        {
+            "user_id": user_id,
+            "timestamp": {"$gte": start_date}
+        }
+    ).sort([("timestamp", -1)]).limit(100).to_list()
     
     # Get AI recommendations
     recommendations = await openai_service.get_energy_recommendations(
@@ -103,7 +116,7 @@ async def get_user_recommendations(
     )
     
     return {
-        "user_id": user_id,
+        "user_id": str(user_id),
         "analysis_period": {
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),

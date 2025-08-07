@@ -1,26 +1,42 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Float
-from sqlalchemy.sql import func
-from sqlalchemy.orm import relationship
+from beanie import Document, Indexed
+from pydantic import Field, EmailStr
+from datetime import datetime
+from typing import Optional
+from pymongo import IndexModel
 
-from app.database import Base
 
-
-class User(Base):
-    """User model"""
-    __tablename__ = "users"
+class User(Document):
+    """User document model for MongoDB"""
     
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String(255), unique=True, index=True, nullable=False)
-    username = Column(String(100), unique=True, index=True, nullable=False)
-    full_name = Column(String(200), nullable=True)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    # Basic user information
+    email: Indexed(EmailStr, unique=True) = Field(..., description="User email address")
+    username: Indexed(str, unique=True) = Field(..., min_length=1, max_length=100, description="Unique username")
+    full_name: Optional[str] = Field(None, max_length=200, description="User's full name")
+    is_active: bool = Field(default=True, description="Whether the user account is active")
+    
+    # Timestamps
+    created_at: datetime = Field(default_factory=datetime.utcnow, description="Account creation timestamp")
+    updated_at: Optional[datetime] = Field(default=None, description="Last update timestamp")
     
     # Energy conservation preferences
-    energy_goal_kwh = Column(Float, nullable=True)  # Monthly energy goal in kWh
-    preferred_temperature = Column(Float, nullable=True)  # Preferred room temperature
+    energy_goal_kwh: Optional[float] = Field(None, ge=0, description="Monthly energy goal in kWh")
+    preferred_temperature: Optional[float] = Field(None, description="Preferred room temperature in Celsius")
     
-    # Relationships
-    devices = relationship("Device", back_populates="user", cascade="all, delete-orphan")
-    energy_data = relationship("EnergyData", back_populates="user", cascade="all, delete-orphan")
+    class Settings:
+        name = "users"  # Collection name
+        indexes = [
+            IndexModel("email", unique=True),
+            IndexModel("username", unique=True),
+            IndexModel("is_active"),
+        ]
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "email": "user@example.com",
+                "username": "john_doe",
+                "full_name": "John Doe",
+                "energy_goal_kwh": 300.0,
+                "preferred_temperature": 22.0
+            }
+        }

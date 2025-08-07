@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func, desc
+from beanie import PydanticObjectId
+from pymongo import DESCENDING
 from typing import List, Optional
 from datetime import datetime, timedelta
 
@@ -20,91 +20,78 @@ router = APIRouter()
 
 # User endpoints
 @router.post("/users/", response_model=UserSchema)
-async def create_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
+async def create_user(user: UserCreate):
     """Create a new user"""
     # Check if user already exists
-    result = await db.execute(
-        select(User).where(
-            (User.email == user.email) | (User.username == user.username)
-        )
+    existing_user = await User.find_one(
+        {"$or": [{"email": user.email}, {"username": user.username}]}
     )
-    existing_user = result.scalar_one_or_none()
     
     if existing_user:
         raise HTTPException(status_code=400, detail="User with this email or username already exists")
     
     db_user = User(**user.model_dump())
-    db.add(db_user)
-    await db.commit()
-    await db.refresh(db_user)
+    await db_user.insert()
     return db_user
 
 
 @router.get("/users/", response_model=List[UserSchema])
 async def get_users(
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
-    db: AsyncSession = Depends(get_db)
+    limit: int = Query(100, ge=1, le=1000)
 ):
     """Get all users with pagination"""
-    result = await db.execute(
-        select(User).where(User.is_active == True).offset(skip).limit(limit)
-    )
-    return result.scalars().all()
+    users = await User.find({"is_active": True}).skip(skip).limit(limit).to_list()
+    return users
 
 
 @router.get("/users/{user_id}", response_model=UserWithDevices)
-async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
+async def get_user(user_id: PydanticObjectId):
     """Get a user by ID with their devices"""
-    result = await db.execute(
-        select(User).where(User.id == user_id, User.is_active == True)
-    )
-    user = result.scalar_one_or_none()
+    user = await User.get(user_id)
     
-    if not user:
+    if not user or not user.is_active:
         raise HTTPException(status_code=404, detail="User not found")
     
-    return user
+    # Get user's devices
+    devices = await Device.find({"user_id": user_id, "is_active": True}).to_list()
+    
+    # Convert to response schema
+    user_dict = user.model_dump()
+    user_dict["devices"] = devices
+    
+    return UserWithDevices(**user_dict)
 
 
 @router.put("/users/{user_id}", response_model=UserSchema)
 async def update_user(
-    user_id: int,
-    user_update: UserUpdate,
-    db: AsyncSession = Depends(get_db)
+    user_id: PydanticObjectId,
+    user_update: UserUpdate
 ):
     """Update a user"""
-    result = await db.execute(
-        select(User).where(User.id == user_id, User.is_active == True)
-    )
-    user = result.scalar_one_or_none()
+    user = await User.get(user_id)
     
-    if not user:
+    if not user or not user.is_active:
         raise HTTPException(status_code=404, detail="User not found")
     
     # Update only provided fields
     update_data = user_update.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(user, field, value)
+    if update_data:
+        update_data["updated_at"] = datetime.utcnow()
+        await user.update({"$set": update_data})
     
-    await db.commit()
-    await db.refresh(user)
-    return user
+    return await User.get(user_id)
 
 
 @router.delete("/users/{user_id}")
-async def delete_user(user_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_user(user_id: PydanticObjectId):
     """Soft delete a user"""
-    result = await db.execute(
-        select(User).where(User.id == user_id, User.is_active == True)
-    )
-    user = result.scalar_one_or_none()
+    user = await User.get(user_id)
     
-    if not user:
+    if not user or not user.is_active:
         raise HTTPException(status_code=404, detail="User not found")
     
-    user.is_active = False
-    await db.commit()
+    await user.update({"$set": {"is_active": False, "updated_at": datetime.utcnow()}})
     return {"message": "User deleted successfully"}
 
 

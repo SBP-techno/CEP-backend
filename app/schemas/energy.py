@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from typing import Optional, List
 from enum import Enum
+from beanie import PydanticObjectId
 
 from app.models.devices import DeviceType
 
@@ -22,7 +23,7 @@ class EnergyDataBase(BaseModel):
 
 class EnergyDataCreate(EnergyDataBase):
     """Schema for creating energy data"""
-    device_id: int = Field(description="ID of the device")
+    device_id: PydanticObjectId = Field(description="ID of the device")
 
 
 class EnergyDataUpdate(BaseModel):
@@ -41,9 +42,9 @@ class EnergyData(EnergyDataBase):
     """Schema for energy data response"""
     model_config = ConfigDict(from_attributes=True)
     
-    id: int
-    user_id: int
-    device_id: int
+    id: PydanticObjectId
+    user_id: PydanticObjectId
+    device_id: PydanticObjectId
     created_at: datetime
 
 
@@ -80,8 +81,8 @@ class Device(DeviceBase):
     """Schema for device response"""
     model_config = ConfigDict(from_attributes=True)
     
-    id: int
-    user_id: int
+    id: PydanticObjectId
+    user_id: PydanticObjectId
     is_active: bool
     created_at: datetime
     updated_at: Optional[datetime]
@@ -122,7 +123,7 @@ class User(UserBase):
     """Schema for user response"""
     model_config = ConfigDict(from_attributes=True)
     
-    id: int
+    id: PydanticObjectId
     is_active: bool
     created_at: datetime
     updated_at: Optional[datetime]

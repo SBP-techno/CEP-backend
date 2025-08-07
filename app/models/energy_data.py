@@ -1,43 +1,57 @@
-from sqlalchemy import Column, Integer, String, DateTime, Float, ForeignKey, Index
-from sqlalchemy.sql import func
-from sqlalchemy.orm import relationship
+from beanie import Document, PydanticObjectId
+from pydantic import Field
+from datetime import datetime
+from typing import Optional
+from pymongo import IndexModel
 
-from app.database import Base
 
-
-class EnergyData(Base):
-    """Energy data model for storing consumption and production data"""
-    __tablename__ = "energy_data"
+class EnergyData(Document):
+    """Energy data document model for storing consumption and production data"""
     
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    device_id = Column(Integer, ForeignKey("devices.id"), nullable=False)
+    # References
+    user_id: PydanticObjectId = Field(..., description="Reference to the user")
+    device_id: PydanticObjectId = Field(..., description="Reference to the device")
     
     # Energy measurements
-    consumption_kwh = Column(Float, nullable=False, default=0.0)  # Energy consumed in kWh
-    production_kwh = Column(Float, nullable=False, default=0.0)   # Energy produced in kWh (for solar panels)
-    power_watts = Column(Float, nullable=True)                    # Instantaneous power in watts
-    voltage = Column(Float, nullable=True)                        # Voltage measurement
-    current_amps = Column(Float, nullable=True)                   # Current measurement in amps
+    consumption_kwh: float = Field(default=0.0, ge=0, description="Energy consumed in kWh")
+    production_kwh: float = Field(default=0.0, ge=0, description="Energy produced in kWh (for solar panels)")
+    power_watts: Optional[float] = Field(None, description="Instantaneous power in watts")
+    voltage: Optional[float] = Field(None, description="Voltage measurement")
+    current_amps: Optional[float] = Field(None, description="Current measurement in amps")
     
     # Environmental data
-    temperature_celsius = Column(Float, nullable=True)            # Temperature at device location
-    humidity_percent = Column(Float, nullable=True)               # Humidity percentage
+    temperature_celsius: Optional[float] = Field(None, description="Temperature at device location")
+    humidity_percent: Optional[float] = Field(None, ge=0, le=100, description="Humidity percentage")
     
     # Cost calculation
-    cost_usd = Column(Float, nullable=True)                       # Cost in USD based on consumption
+    cost_usd: Optional[float] = Field(None, ge=0, description="Cost in USD based on consumption")
     
-    # Timestamp for the measurement
-    timestamp = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Timestamps
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Timestamp of the measurement")
+    created_at: datetime = Field(default_factory=datetime.utcnow, description="Record creation timestamp")
     
-    # Relationships
-    user = relationship("User", back_populates="energy_data")
-    device = relationship("Device", back_populates="energy_data")
+    class Settings:
+        name = "energy_data"  # Collection name
+        indexes = [
+            IndexModel("user_id"),
+            IndexModel("device_id"),
+            IndexModel("timestamp"),
+            IndexModel([("user_id", 1), ("timestamp", -1)]),
+            IndexModel([("device_id", 1), ("timestamp", -1)]),
+            IndexModel([("user_id", 1), ("device_id", 1), ("timestamp", -1)]),
+        ]
     
-    # Indexes for efficient querying
-    __table_args__ = (
-        Index('idx_energy_data_user_timestamp', 'user_id', 'timestamp'),
-        Index('idx_energy_data_device_timestamp', 'device_id', 'timestamp'),
-        Index('idx_energy_data_timestamp', 'timestamp'),
-    )
+    class Config:
+        schema_extra = {
+            "example": {
+                "consumption_kwh": 1.25,
+                "production_kwh": 0.0,
+                "power_watts": 1800.0,
+                "voltage": 120.0,
+                "current_amps": 15.0,
+                "temperature_celsius": 22.5,
+                "humidity_percent": 45.0,
+                "cost_usd": 0.15,
+                "timestamp": "2024-01-15T10:30:00"
+            }
+        }
