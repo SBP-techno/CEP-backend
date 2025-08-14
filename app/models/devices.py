@@ -1,46 +1,77 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Float, ForeignKey, Enum
-from sqlalchemy.sql import func
-from sqlalchemy.orm import relationship
-import enum
-
-from app.database import Base
-
-
-class DeviceType(enum.Enum):
-    """Device type enumeration"""
-    HVAC = "hvac"
-    LIGHTING = "lighting"
-    APPLIANCE = "appliance"
-    WATER_HEATER = "water_heater"
-    SOLAR_PANEL = "solar_panel"
-    SMART_METER = "smart_meter"
-    OTHER = "other"
+from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any
+from datetime import datetime
+from bson import ObjectId
+from app.models.users import PyObjectId
 
 
-class Device(Base):
-    """Device model for energy monitoring"""
-    __tablename__ = "devices"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    
-    # Device information
-    name = Column(String(200), nullable=False)
-    device_type = Column(Enum(DeviceType), nullable=False)
-    model = Column(String(200), nullable=True)
-    manufacturer = Column(String(200), nullable=True)
-    location = Column(String(200), nullable=True)  # Room or area where device is located
-    
-    # Device specifications
-    rated_power_watts = Column(Float, nullable=True)  # Rated power consumption in watts
-    is_smart_device = Column(Boolean, default=False)  # Whether device can be controlled remotely
-    is_active = Column(Boolean, default=True)
-    
-    # Timestamps
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    last_seen = Column(DateTime(timezone=True), nullable=True)
-    
-    # Relationships
-    user = relationship("User", back_populates="devices")
-    energy_data = relationship("EnergyData", back_populates="device", cascade="all, delete-orphan")
+class DeviceBase(BaseModel):
+    """Base device model"""
+    name: str = Field(..., min_length=1, max_length=100)
+    device_type: str = Field(..., description="Type of device (hvac, lighting, appliance, solar, etc.)")
+    location: Optional[str] = Field(None, max_length=200)
+    manufacturer: Optional[str] = Field(None, max_length=100)
+    model: Optional[str] = Field(None, max_length=100)
+    power_rating_watts: Optional[float] = Field(None, description="Device power rating in watts")
+    is_smart_device: bool = Field(default=False)
+    is_active: bool = Field(default=True)
+    specifications: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+class DeviceCreate(DeviceBase):
+    """Device creation model"""
+    user_id: str = Field(..., description="ID of the user who owns this device")
+
+
+class DeviceUpdate(BaseModel):
+    """Device update model"""
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    device_type: Optional[str] = None
+    location: Optional[str] = Field(None, max_length=200)
+    manufacturer: Optional[str] = Field(None, max_length=100)
+    model: Optional[str] = Field(None, max_length=100)
+    power_rating_watts: Optional[float] = None
+    is_smart_device: Optional[bool] = None
+    is_active: Optional[bool] = None
+    specifications: Optional[Dict[str, Any]] = None
+
+
+class DeviceInDB(DeviceBase):
+    """Device model for database operations"""
+    id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
+    user_id: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    last_energy_reading: Optional[datetime] = None
+    total_energy_consumed: float = Field(default=0.0)
+    total_energy_produced: float = Field(default=0.0)
+    current_power_draw: float = Field(default=0.0)
+    efficiency_rating: Optional[float] = Field(None, description="Device efficiency rating (0-100)")
+
+    class Config:
+        allow_population_by_field_name = True
+        arbitrary_types_allowed = True
+        json_encoders = {ObjectId: str}
+
+
+class DeviceResponse(DeviceBase):
+    """Device response model"""
+    id: str
+    user_id: str
+    created_at: datetime
+    updated_at: datetime
+    last_energy_reading: Optional[datetime]
+    total_energy_consumed: float
+    total_energy_produced: float
+    current_power_draw: float
+    efficiency_rating: Optional[float]
+
+    class Config:
+        json_encoders = {ObjectId: str}
+
+
+class DeviceWithEnergyData(DeviceResponse):
+    """Device model with energy data"""
+    recent_energy_data: Optional[list] = Field(default_factory=list)
+    daily_energy_consumption: Optional[float] = None
+    monthly_energy_consumption: Optional[float] = None

@@ -1,400 +1,587 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc
+from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
+from bson import ObjectId
+import logging
 
-from app.database import get_db
-from app.models.users import User
-from app.models.devices import Device
-from app.models.energy_data import EnergyData
-from app.schemas.energy import EnergyStats
-from app.services.openai_service import openai_service
+from app.database import get_database
+from app.services.openai_service import OpenAIService
+from app.schemas.energy import (
+    AIRecommendationRequest, AIRecommendationResponse,
+    EnergyAnalysisRequest, EnergyAnalysisResponse,
+    EnergyComparisonRequest, EnergyComparisonResponse,
+    DeviceEfficiencyReport, UserEfficiencyReport,
+    SuccessResponse, ErrorResponse
+)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
-@router.post("/users/{user_id}/recommendations")
-async def get_user_recommendations(
-    user_id: int,
-    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
-    db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
-    """Get AI-powered energy conservation recommendations for a user"""
-    
-    # Verify user exists
-    result = await db.execute(
-        select(User).where(User.id == user_id, User.is_active == True)
-    )
-    user = result.scalar_one_or_none()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Get user data
-    user_data = {
-        "energy_goal_kwh": user.energy_goal_kwh,
-        "preferred_temperature": user.preferred_temperature,
-        "username": user.username,
-        "full_name": user.full_name
-    }
-    
-    # Get energy statistics for the period
-    end_date = datetime.utcnow()
-    start_date = end_date - timedelta(days=days)
-    
-    # Get aggregated energy stats
-    from sqlalchemy import func
-    result = await db.execute(
-        select(
-            func.sum(EnergyData.consumption_kwh).label("total_consumption"),
-            func.sum(EnergyData.production_kwh).label("total_production"),
-            func.sum(EnergyData.cost_usd).label("total_cost"),
-            func.avg(EnergyData.power_watts).label("avg_power"),
-            func.max(EnergyData.power_watts).label("peak_power"),
-            func.count(func.distinct(EnergyData.device_id)).label("device_count")
-        ).where(
-            and_(
-                EnergyData.user_id == user_id,
-                EnergyData.timestamp >= start_date,
-                EnergyData.timestamp <= end_date
-            )
-        )
-    )
-    
-    stats = result.first()
-    energy_stats = EnergyStats(
-        total_consumption_kwh=stats.total_consumption or 0.0,
-        total_production_kwh=stats.total_production or 0.0,
-        total_cost_usd=stats.total_cost or 0.0,
-        average_power_watts=stats.avg_power,
-        peak_power_watts=stats.peak_power,
-        period_start=start_date,
-        period_end=end_date,
-        device_count=stats.device_count or 0
-    )
-    
-    # Get user devices
-    result = await db.execute(
-        select(Device).where(Device.user_id == user_id, Device.is_active == True)
-    )
-    devices = result.scalars().all()
-    
-    # Get recent energy data
-    result = await db.execute(
-        select(EnergyData)
-        .where(
-            and_(
-                EnergyData.user_id == user_id,
-                EnergyData.timestamp >= start_date
-            )
-        )
-        .order_by(desc(EnergyData.timestamp))
-        .limit(100)
-    )
-    recent_energy_data = result.scalars().all()
-    
-    # Get AI recommendations
-    recommendations = await openai_service.get_energy_recommendations(
-        user_data=user_data,
-        energy_stats=energy_stats,
-        devices=devices,
-        recent_energy_data=recent_energy_data
-    )
-    
-    return {
-        "user_id": user_id,
-        "analysis_period": {
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat(),
-            "days": days
-        },
-        "energy_stats": energy_stats.model_dump(),
-        "recommendations": recommendations
-    }
+# Helper functions
+def get_db():
+    """Get database instance"""
+    return get_database()
 
 
-@router.post("/users/{user_id}/energy-analysis")
-async def analyze_user_energy_patterns(
-    user_id: int,
-    time_period: str = Query("week", regex="^(week|month|quarter)$"),
-    db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
-    """Analyze energy consumption patterns for a user"""
-    
-    # Verify user exists
-    result = await db.execute(
-        select(User).where(User.id == user_id, User.is_active == True)
-    )
-    user = result.scalar_one_or_none()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Determine time range based on period
-    end_date = datetime.utcnow()
-    if time_period == "week":
-        start_date = end_date - timedelta(weeks=1)
-    elif time_period == "month":
-        start_date = end_date - timedelta(days=30)
-    elif time_period == "quarter":
-        start_date = end_date - timedelta(days=90)
-    
-    # Get energy data for the period
-    result = await db.execute(
-        select(EnergyData)
-        .where(
-            and_(
-                EnergyData.user_id == user_id,
-                EnergyData.timestamp >= start_date,
-                EnergyData.timestamp <= end_date
-            )
-        )
-        .order_by(EnergyData.timestamp)
-    )
-    energy_data = result.scalars().all()
-    
-    if not energy_data:
-        raise HTTPException(status_code=404, detail="No energy data found for the specified period")
-    
-    # Get AI analysis
-    analysis = await openai_service.analyze_energy_patterns(
-        energy_data=energy_data,
-        time_period=time_period
-    )
-    
-    return {
-        "user_id": user_id,
-        "time_period": time_period,
-        "analysis_period": {
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat()
-        },
-        "data_points": len(energy_data),
-        "analysis": analysis
-    }
-
-
-@router.post("/devices/{device_id}/optimization-tips")
-async def get_device_optimization_tips(
-    device_id: int,
-    days: int = Query(7, ge=1, le=30, description="Number of days to analyze"),
-    db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
-    """Get AI-powered optimization tips for a specific device"""
-    
-    # Verify device exists
-    result = await db.execute(
-        select(Device).where(Device.id == device_id, Device.is_active == True)
-    )
-    device = result.scalar_one_or_none()
-    
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
-    
-    # Get device energy data
-    end_date = datetime.utcnow()
-    start_date = end_date - timedelta(days=days)
-    
-    result = await db.execute(
-        select(EnergyData)
-        .where(
-            and_(
-                EnergyData.device_id == device_id,
-                EnergyData.timestamp >= start_date
-            )
-        )
-        .order_by(EnergyData.timestamp)
-    )
-    device_energy_data = result.scalars().all()
-    
-    # Get AI optimization tips
-    tips = await openai_service.get_device_optimization_tips(
-        device=device,
-        device_energy_data=device_energy_data
-    )
-    
-    return {
-        "device_id": device_id,
-        "device_name": device.name,
-        "device_type": device.device_type.value,
-        "analysis_period": {
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat(),
-            "days": days
-        },
-        "data_points": len(device_energy_data),
-        "optimization_tips": tips
-    }
-
-
-@router.post("/users/{user_id}/compare-usage")
-async def compare_energy_usage(
-    user_id: int,
-    period1_days: int = Query(30, ge=1, le=365, description="Days for first period"),
-    period2_days: int = Query(30, ge=1, le=365, description="Days for second period"),
-    db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
-    """Compare energy usage between two time periods with AI insights"""
-    
-    # Verify user exists
-    result = await db.execute(
-        select(User).where(User.id == user_id, User.is_active == True)
-    )
-    user = result.scalar_one_or_none()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    from sqlalchemy import func
-    
-    # Calculate date ranges
-    end_date = datetime.utcnow()
-    period1_start = end_date - timedelta(days=period1_days)
-    period2_end = period1_start
-    period2_start = period2_end - timedelta(days=period2_days)
-    
-    # Get stats for period 1 (recent)
-    result = await db.execute(
-        select(
-            func.sum(EnergyData.consumption_kwh).label("total_consumption"),
-            func.sum(EnergyData.production_kwh).label("total_production"),
-            func.sum(EnergyData.cost_usd).label("total_cost"),
-            func.avg(EnergyData.power_watts).label("avg_power"),
-            func.count(EnergyData.id).label("data_points")
-        ).where(
-            and_(
-                EnergyData.user_id == user_id,
-                EnergyData.timestamp >= period1_start,
-                EnergyData.timestamp <= end_date
-            )
-        )
-    )
-    period1_stats = result.first()
-    
-    # Get stats for period 2 (older)
-    result = await db.execute(
-        select(
-            func.sum(EnergyData.consumption_kwh).label("total_consumption"),
-            func.sum(EnergyData.production_kwh).label("total_production"),
-            func.sum(EnergyData.cost_usd).label("total_cost"),
-            func.avg(EnergyData.power_watts).label("avg_power"),
-            func.count(EnergyData.id).label("data_points")
-        ).where(
-            and_(
-                EnergyData.user_id == user_id,
-                EnergyData.timestamp >= period2_start,
-                EnergyData.timestamp <= period2_end
-            )
-        )
-    )
-    period2_stats = result.first()
-    
-    # Calculate percentage changes
-    def calculate_change(new_val, old_val):
-        if old_val and old_val != 0:
-            return ((new_val or 0) - old_val) / old_val * 100
-        return 0
-    
-    consumption_change = calculate_change(
-        period1_stats.total_consumption, 
-        period2_stats.total_consumption
-    )
-    cost_change = calculate_change(
-        period1_stats.total_cost, 
-        period2_stats.total_cost
-    )
-    power_change = calculate_change(
-        period1_stats.avg_power, 
-        period2_stats.avg_power
-    )
-    
-    # Prepare comparison data for AI analysis
-    comparison_context = f"""
-    Energy Usage Comparison:
-    
-    Recent Period ({period1_days} days):
-    - Consumption: {period1_stats.total_consumption or 0:.2f} kWh
-    - Cost: ${period1_stats.total_cost or 0:.2f}
-    - Average Power: {period1_stats.avg_power or 0:.1f} W
-    
-    Previous Period ({period2_days} days):
-    - Consumption: {period2_stats.total_consumption or 0:.2f} kWh
-    - Cost: ${period2_stats.total_cost or 0:.2f}
-    - Average Power: {period2_stats.avg_power or 0:.1f} W
-    
-    Changes:
-    - Consumption: {consumption_change:+.1f}%
-    - Cost: {cost_change:+.1f}%
-    - Average Power: {power_change:+.1f}%
-    """
-    
-    # Get AI insights on the comparison
+async def get_user_by_id(user_id: str, db) -> Optional[dict]:
+    """Get user by ID"""
     try:
-        if openai_service.client:
-            response = await openai_service.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {
-                        "role": "system", 
-                        "content": "You are an energy analyst. Analyze the energy usage comparison and provide insights in JSON format with 'interpretation', 'trends', and 'recommendations' fields."
-                    },
-                    {
-                        "role": "user", 
-                        "content": f"Analyze this energy usage comparison and provide insights:\n\n{comparison_context}"
-                    }
-                ],
-                temperature=0.5,
-                max_tokens=1000
-            )
-            
-            import json
-            ai_insights = json.loads(response.choices[0].message.content)
-        else:
-            ai_insights = {"error": "AI service not configured"}
+        user = await db.users.find_one({"_id": ObjectId(user_id)})
+        return user
     except Exception as e:
-        ai_insights = {"error": f"AI analysis failed: {str(e)}"}
-    
-    return {
-        "user_id": user_id,
-        "comparison": {
-            "recent_period": {
-                "start_date": period1_start.isoformat(),
-                "end_date": end_date.isoformat(),
-                "days": period1_days,
-                "consumption_kwh": period1_stats.total_consumption or 0.0,
-                "cost_usd": period1_stats.total_cost or 0.0,
-                "avg_power_watts": period1_stats.avg_power or 0.0,
-                "data_points": period1_stats.data_points or 0
-            },
-            "previous_period": {
-                "start_date": period2_start.isoformat(),
-                "end_date": period2_end.isoformat(),
-                "days": period2_days,
-                "consumption_kwh": period2_stats.total_consumption or 0.0,
-                "cost_usd": period2_stats.total_cost or 0.0,
-                "avg_power_watts": period2_stats.avg_power or 0.0,
-                "data_points": period2_stats.data_points or 0
-            },
-            "changes": {
-                "consumption_change_percent": round(consumption_change, 2),
-                "cost_change_percent": round(cost_change, 2),
-                "power_change_percent": round(power_change, 2)
-            }
-        },
-        "ai_insights": ai_insights
-    }
+        logger.error(f"Error getting user {user_id}: {e}")
+        return None
 
 
+async def get_device_by_id(device_id: str, db) -> Optional[dict]:
+    """Get device by ID"""
+    try:
+        device = await db.devices.find_one({"_id": ObjectId(device_id)})
+        return device
+    except Exception as e:
+        logger.error(f"Error getting device {device_id}: {e}")
+        return None
+
+
+# AI Service endpoints
 @router.get("/ai-status")
-async def get_ai_service_status() -> Dict[str, Any]:
-    """Get the status of the AI service"""
-    
-    is_configured = openai_service.client is not None
-    
-    return {
-        "ai_service_configured": is_configured,
-        "openai_model": "gpt-3.5-turbo" if is_configured else None,
-        "status": "ready" if is_configured else "not_configured",
-        "message": "AI service is ready" if is_configured else "OpenAI API key not configured"
-    }
+async def check_ai_service_status():
+    """Check if AI service is available"""
+    try:
+        openai_service = OpenAIService()
+        is_available = await openai_service.check_availability()
+        
+        return {
+            "status": "available" if is_available else "unavailable",
+            "service": "OpenAI",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error checking AI service status: {e}")
+        return {
+            "status": "error",
+            "service": "OpenAI",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+
+@router.post("/users/{user_id}/recommendations", response_model=AIRecommendationResponse)
+async def get_ai_recommendations(
+    user_id: str,
+    request: AIRecommendationRequest,
+    db=Depends(get_db)
+):
+    """Get AI-powered energy conservation recommendations for a user"""
+    try:
+        user = await get_user_by_id(user_id, db)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get user's energy data and devices
+        devices = await db.devices.find({"user_id": user_id}).to_list(length=None)
+        
+        # Get recent energy data (last 30 days)
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        energy_data = await db.energy_data.find({
+            "user_id": user_id,
+            "timestamp": {"$gte": thirty_days_ago}
+        }).sort("timestamp", -1).to_list(length=100)
+        
+        # Get energy statistics
+        pipeline = [
+            {
+                "$match": {
+                    "user_id": user_id,
+                    "timestamp": {"$gte": thirty_days_ago}
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "total_energy_consumed": {"$sum": "$energy_consumption_kwh"},
+                    "total_energy_produced": {"$sum": "$energy_production_kwh"},
+                    "total_cost": {"$sum": {"$ifNull": ["$total_cost", 0]}},
+                    "average_power_consumption": {"$avg": "$power_consumption_watts"},
+                    "peak_power_consumption": {"$max": "$power_consumption_watts"}
+                }
+            }
+        ]
+        
+        stats_result = list(await db.energy_data.aggregate(pipeline))
+        stats = stats_result[0] if stats_result else {
+            "total_energy_consumed": 0,
+            "total_energy_produced": 0,
+            "total_cost": 0,
+            "average_power_consumption": 0,
+            "peak_power_consumption": 0
+        }
+        
+        # Prepare data for AI analysis
+        analysis_data = {
+            "user": {
+                "energy_goal_kwh": user.get("energy_goal_kwh", 1000),
+                "preferred_energy_source": user.get("preferred_energy_source", "mixed"),
+                "device_count": len(devices)
+            },
+            "devices": [
+                {
+                    "name": device["name"],
+                    "type": device["device_type"],
+                    "power_rating": device.get("power_rating_watts", 0),
+                    "total_consumed": device.get("total_energy_consumed", 0),
+                    "is_smart": device.get("is_smart_device", False)
+                }
+                for device in devices
+            ],
+            "energy_stats": {
+                "total_consumed": stats["total_energy_consumed"],
+                "total_produced": stats["total_energy_produced"],
+                "total_cost": stats["total_cost"],
+                "average_power": stats["average_power_consumption"],
+                "peak_power": stats["peak_power_consumption"]
+            },
+            "recent_data_points": len(energy_data)
+        }
+        
+        # Get AI recommendations
+        openai_service = OpenAIService()
+        recommendations = await openai_service.get_energy_recommendations(
+            analysis_data, request.analysis_type
+        )
+        
+        return AIRecommendationResponse(
+            user_id=user_id,
+            analysis_type=request.analysis_type,
+            recommendations=recommendations.get("recommendations", []),
+            energy_savings_potential=recommendations.get("energy_savings_potential"),
+            cost_savings_potential=recommendations.get("cost_savings_potential"),
+            efficiency_score=recommendations.get("efficiency_score"),
+            device_specific_tips=recommendations.get("device_specific_tips")
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting AI recommendations for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/users/{user_id}/energy-analysis", response_model=EnergyAnalysisResponse)
+async def analyze_energy_patterns(
+    user_id: str,
+    request: EnergyAnalysisRequest,
+    db=Depends(get_db)
+):
+    """Analyze energy patterns and identify trends"""
+    try:
+        user = await get_user_by_id(user_id, db)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get energy data for the specified period
+        energy_data = await db.energy_data.find({
+            "user_id": user_id,
+            "timestamp": {"$gte": request.start_date, "$lte": request.end_date}
+        }).sort("timestamp", 1).to_list(length=None)
+        
+        if not energy_data:
+            raise HTTPException(status_code=404, detail="No energy data found for the specified period")
+        
+        # Prepare data for analysis
+        analysis_data = {
+            "period": {
+                "start": request.start_date.isoformat(),
+                "end": request.end_date.isoformat()
+            },
+            "data_points": len(energy_data),
+            "energy_data": [
+                {
+                    "timestamp": data["timestamp"].isoformat(),
+                    "consumption": data["energy_consumption_kwh"],
+                    "production": data["energy_production_kwh"],
+                    "power": data["power_consumption_watts"],
+                    "cost": data.get("total_cost", 0),
+                    "device_id": data["device_id"]
+                }
+                for data in energy_data
+            ]
+        }
+        
+        # Get AI analysis
+        openai_service = OpenAIService()
+        analysis_result = await openai_service.analyze_energy_patterns(
+            analysis_data, request.analysis_type
+        )
+        
+        return EnergyAnalysisResponse(
+            user_id=user_id,
+            analysis_type=request.analysis_type,
+            patterns_found=analysis_result.get("patterns", []),
+            anomalies_detected=analysis_result.get("anomalies", []),
+            trends_identified=analysis_result.get("trends", []),
+            insights=analysis_result.get("insights", []),
+            recommendations=analysis_result.get("recommendations", [])
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error analyzing energy patterns for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/devices/{device_id}/optimization-tips", response_model=Dict[str, Any])
+async def get_device_optimization_tips(
+    device_id: str,
+    db=Depends(get_db)
+):
+    """Get device-specific optimization tips"""
+    try:
+        device = await get_device_by_id(device_id, db)
+        if not device:
+            raise HTTPException(status_code=404, detail="Device not found")
+        
+        # Get device's energy data (last 30 days)
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        energy_data = await db.energy_data.find({
+            "device_id": device_id,
+            "timestamp": {"$gte": thirty_days_ago}
+        }).sort("timestamp", -1).to_list(length=50)
+        
+        # Get device statistics
+        pipeline = [
+            {
+                "$match": {
+                    "device_id": device_id,
+                    "timestamp": {"$gte": thirty_days_ago}
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "total_energy_consumed": {"$sum": "$energy_consumption_kwh"},
+                    "total_cost": {"$sum": {"$ifNull": ["$total_cost", 0]}},
+                    "average_power": {"$avg": "$power_consumption_watts"},
+                    "peak_power": {"$max": "$power_consumption_watts"},
+                    "usage_hours": {"$sum": 1}
+                }
+            }
+        ]
+        
+        stats_result = list(await db.energy_data.aggregate(pipeline))
+        stats = stats_result[0] if stats_result else {
+            "total_energy_consumed": 0,
+            "total_cost": 0,
+            "average_power": 0,
+            "peak_power": 0,
+            "usage_hours": 0
+        }
+        
+        # Prepare device data for analysis
+        device_data = {
+            "device": {
+                "name": device["name"],
+                "type": device["device_type"],
+                "manufacturer": device.get("manufacturer", ""),
+                "model": device.get("model", ""),
+                "power_rating": device.get("power_rating_watts", 0),
+                "is_smart": device.get("is_smart_device", False),
+                "location": device.get("location", "")
+            },
+            "usage_stats": {
+                "total_energy_consumed": stats["total_energy_consumed"],
+                "total_cost": stats["total_cost"],
+                "average_power": stats["average_power"],
+                "peak_power": stats["peak_power"],
+                "usage_hours": stats["usage_hours"]
+            },
+            "recent_data": [
+                {
+                    "timestamp": data["timestamp"].isoformat(),
+                    "consumption": data["energy_consumption_kwh"],
+                    "power": data["power_consumption_watts"],
+                    "cost": data.get("total_cost", 0)
+                }
+                for data in energy_data[:10]  # Last 10 readings
+            ]
+        }
+        
+        # Get AI optimization tips
+        openai_service = OpenAIService()
+        optimization_tips = await openai_service.get_device_optimization_tips(device_data)
+        
+        return {
+            "device_id": device_id,
+            "device_name": device["name"],
+            "device_type": device["device_type"],
+            "optimization_tips": optimization_tips.get("tips", []),
+            "potential_savings": optimization_tips.get("potential_savings"),
+            "efficiency_score": optimization_tips.get("efficiency_score"),
+            "recommendations": optimization_tips.get("recommendations", []),
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting optimization tips for device {device_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/users/{user_id}/compare-usage", response_model=EnergyComparisonResponse)
+async def compare_energy_usage(
+    user_id: str,
+    request: EnergyComparisonRequest,
+    db=Depends(get_db)
+):
+    """Compare energy usage between two periods"""
+    try:
+        user = await get_user_by_id(user_id, db)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get current period data
+        current_pipeline = [
+            {
+                "$match": {
+                    "user_id": user_id,
+                    "timestamp": {"$gte": request.start_date, "$lte": request.end_date}
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "total_energy_consumed": {"$sum": "$energy_consumption_kwh"},
+                    "total_energy_produced": {"$sum": "$energy_production_kwh"},
+                    "total_cost": {"$sum": {"$ifNull": ["$total_cost", 0]}},
+                    "average_power_consumption": {"$avg": "$power_consumption_watts"},
+                    "peak_power_consumption": {"$max": "$power_consumption_watts"},
+                    "data_points_count": {"$sum": 1}
+                }
+            }
+        ]
+        
+        current_result = list(await db.energy_data.aggregate(current_pipeline))
+        current_stats = current_result[0] if current_result else {
+            "total_energy_consumed": 0,
+            "total_energy_produced": 0,
+            "total_cost": 0,
+            "average_power_consumption": 0,
+            "peak_power_consumption": 0,
+            "data_points_count": 0
+        }
+        
+        current_period = {
+            "total_energy_consumed": current_stats["total_energy_consumed"],
+            "total_energy_produced": current_stats["total_energy_produced"],
+            "total_cost": current_stats["total_cost"],
+            "average_power_consumption": current_stats["average_power_consumption"],
+            "peak_power_consumption": current_stats["peak_power_consumption"],
+            "period_start": request.start_date,
+            "period_end": request.end_date,
+            "data_points_count": current_stats["data_points_count"]
+        }
+        
+        comparison_period = None
+        percentage_change = None
+        cost_savings = None
+        energy_savings = None
+        
+        # Get comparison period data if provided
+        if request.comparison_start_date and request.comparison_end_date:
+            comparison_pipeline = [
+                {
+                    "$match": {
+                        "user_id": user_id,
+                        "timestamp": {"$gte": request.comparison_start_date, "$lte": request.comparison_end_date}
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": None,
+                        "total_energy_consumed": {"$sum": "$energy_consumption_kwh"},
+                        "total_energy_produced": {"$sum": "$energy_production_kwh"},
+                        "total_cost": {"$sum": {"$ifNull": ["$total_cost", 0]}},
+                        "average_power_consumption": {"$avg": "$power_consumption_watts"},
+                        "peak_power_consumption": {"$max": "$power_consumption_watts"},
+                        "data_points_count": {"$sum": 1}
+                    }
+                }
+            ]
+            
+            comparison_result = list(await db.energy_data.aggregate(comparison_pipeline))
+            comparison_stats = comparison_result[0] if comparison_result else {
+                "total_energy_consumed": 0,
+                "total_energy_produced": 0,
+                "total_cost": 0,
+                "average_power_consumption": 0,
+                "peak_power_consumption": 0,
+                "data_points_count": 0
+            }
+            
+            comparison_period = {
+                "total_energy_consumed": comparison_stats["total_energy_consumed"],
+                "total_energy_produced": comparison_stats["total_energy_produced"],
+                "total_cost": comparison_stats["total_cost"],
+                "average_power_consumption": comparison_stats["average_power_consumption"],
+                "peak_power_consumption": comparison_stats["peak_power_consumption"],
+                "period_start": request.comparison_start_date,
+                "period_end": request.comparison_end_date,
+                "data_points_count": comparison_stats["data_points_count"]
+            }
+            
+            # Calculate changes
+            if comparison_stats["total_energy_consumed"] > 0:
+                percentage_change = ((current_stats["total_energy_consumed"] - comparison_stats["total_energy_consumed"]) / comparison_stats["total_energy_consumed"]) * 100
+                energy_savings = comparison_stats["total_energy_consumed"] - current_stats["total_energy_consumed"]
+                cost_savings = comparison_stats["total_cost"] - current_stats["total_cost"]
+        
+        return EnergyComparisonResponse(
+            current_period=current_period,
+            comparison_period=comparison_period,
+            percentage_change=percentage_change,
+            cost_savings=cost_savings,
+            energy_savings=energy_savings
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error comparing energy usage for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/users/{user_id}/efficiency-report", response_model=UserEfficiencyReport)
+async def get_user_efficiency_report(
+    user_id: str,
+    db=Depends(get_db)
+):
+    """Get comprehensive efficiency report for a user"""
+    try:
+        user = await get_user_by_id(user_id, db)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get user's devices
+        devices = await db.devices.find({"user_id": user_id}).to_list(length=None)
+        
+        # Get energy data for last 30 days
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        
+        # Get overall user statistics
+        user_pipeline = [
+            {
+                "$match": {
+                    "user_id": user_id,
+                    "timestamp": {"$gte": thirty_days_ago}
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "total_energy_consumed": {"$sum": "$energy_consumption_kwh"},
+                    "total_cost": {"$sum": {"$ifNull": ["$total_cost", 0]}}
+                }
+            }
+        ]
+        
+        user_stats_result = list(await db.energy_data.aggregate(user_pipeline))
+        user_stats = user_stats_result[0] if user_stats_result else {
+            "total_energy_consumed": 0,
+            "total_cost": 0
+        }
+        
+        # Get device-specific reports
+        device_reports = []
+        total_potential_savings = 0
+        
+        for device in devices:
+            device_pipeline = [
+                {
+                    "$match": {
+                        "device_id": str(device["_id"]),
+                        "timestamp": {"$gte": thirty_days_ago}
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": None,
+                        "total_energy_consumed": {"$sum": "$energy_consumption_kwh"},
+                        "total_cost": {"$sum": {"$ifNull": ["$total_cost", 0]}},
+                        "average_power": {"$avg": "$power_consumption_watts"}
+                    }
+                }
+            ]
+            
+            device_stats_result = list(await db.energy_data.aggregate(device_pipeline))
+            device_stats = device_stats_result[0] if device_stats_result else {
+                "total_energy_consumed": 0,
+                "total_cost": 0,
+                "average_power": 0
+            }
+            
+            # Calculate efficiency score (simplified)
+            power_rating = device.get("power_rating_watts", 0)
+            efficiency_score = 0
+            if power_rating > 0:
+                efficiency_score = min(100, max(0, (power_rating - device_stats["average_power"]) / power_rating * 100))
+            
+            # Get device-specific recommendations
+            openai_service = OpenAIService()
+            device_data = {
+                "device": {
+                    "name": device["name"],
+                    "type": device["device_type"],
+                    "power_rating": power_rating
+                },
+                "usage": {
+                    "energy_consumed": device_stats["total_energy_consumed"],
+                    "cost": device_stats["total_cost"],
+                    "average_power": device_stats["average_power"]
+                }
+            }
+            
+            device_tips = await openai_service.get_device_optimization_tips(device_data)
+            recommendations = device_tips.get("recommendations", [])
+            potential_savings = device_tips.get("potential_savings", 0)
+            total_potential_savings += potential_savings
+            
+            device_reports.append(DeviceEfficiencyReport(
+                device_id=str(device["_id"]),
+                device_name=device["name"],
+                device_type=device["device_type"],
+                efficiency_score=efficiency_score,
+                energy_consumption=device_stats["total_energy_consumed"],
+                cost=device_stats["total_cost"],
+                recommendations=recommendations,
+                potential_savings=potential_savings
+            ))
+        
+        # Calculate overall efficiency score
+        overall_efficiency_score = sum(report.efficiency_score for report in device_reports) / len(device_reports) if device_reports else 0
+        
+        # Get general recommendations
+        openai_service = OpenAIService()
+        general_recommendations = await openai_service.get_energy_recommendations({
+            "user": user,
+            "devices": [{"name": d["name"], "type": d["device_type"]} for d in devices],
+            "energy_stats": user_stats
+        }, "general")
+        
+        return UserEfficiencyReport(
+            user_id=user_id,
+            overall_efficiency_score=overall_efficiency_score,
+            total_energy_consumed=user_stats["total_energy_consumed"],
+            total_cost=user_stats["total_cost"],
+            device_reports=device_reports,
+            recommendations=general_recommendations.get("recommendations", []),
+            potential_monthly_savings=total_potential_savings
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting efficiency report for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")

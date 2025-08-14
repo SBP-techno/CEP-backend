@@ -1,6 +1,6 @@
 # Energy Conservation API
 
-A comprehensive REST API for energy conservation applications with AI-powered recommendations using OpenAI integration and PostgreSQL database.
+A comprehensive REST API for energy conservation applications with AI-powered recommendations using OpenAI integration and MongoDB database.
 
 ## Features
 
@@ -14,17 +14,17 @@ A comprehensive REST API for energy conservation applications with AI-powered re
 ## Tech Stack
 
 - **FastAPI**: Modern Python web framework
-- **SQLAlchemy**: Async ORM with PostgreSQL
+- **MongoDB**: NoSQL database with Motor for async operations
 - **OpenAI API**: AI-powered energy recommendations
 - **Pydantic**: Data validation and serialization
-- **Asyncpg**: Async PostgreSQL driver
+- **Motor**: Async MongoDB driver
 
 ## Quick Start
 
 ### Prerequisites
 
 - Python 3.8+
-- PostgreSQL 12+
+- MongoDB 4.4+
 - OpenAI API key (optional but recommended for AI features)
 
 ### Installation
@@ -32,7 +32,7 @@ A comprehensive REST API for energy conservation applications with AI-powered re
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
-   cd CEP-backend
+   cd energy-conservation-api
    ```
 
 2. **Create virtual environment**
@@ -52,13 +52,16 @@ A comprehensive REST API for energy conservation applications with AI-powered re
    # Edit .env with your configuration
    ```
 
-5. **Set up database**
+5. **Set up MongoDB**
    ```bash
-   # Create PostgreSQL database
-   createdb energy_conservation_db
+   # Install MongoDB (Ubuntu/Debian)
+   sudo apt-get install mongodb
    
-   # Update DATABASE_URL in .env file
-   DATABASE_URL=postgresql://username:password@localhost:5432/energy_conservation_db
+   # Or use Docker
+   docker run -d -p 27017:27017 --name mongodb mongo:latest
+   
+   # Update MONGODB_URL in .env file
+   MONGODB_URL=mongodb://localhost:27017/energy_conservation_db
    ```
 
 6. **Run the application**
@@ -73,8 +76,9 @@ The API will be available at `http://localhost:8000`
 Edit the `.env` file with your settings:
 
 ```env
-# Database
-DATABASE_URL=postgresql://user:password@localhost:5432/energy_conservation_db
+# MongoDB
+MONGODB_URL=mongodb://localhost:27017/energy_conservation_db
+DATABASE_NAME=energy_conservation_db
 
 # OpenAI (for AI features)
 OPENAI_API_KEY=your_openai_api_key_here
@@ -128,6 +132,7 @@ Once the server is running, visit:
 - `POST /api/v1/ai/users/{user_id}/energy-analysis` - Analyze energy patterns
 - `POST /api/v1/ai/devices/{device_id}/optimization-tips` - Get device optimization tips
 - `POST /api/v1/ai/users/{user_id}/compare-usage` - Compare usage periods
+- `GET /api/v1/ai/users/{user_id}/efficiency-report` - Get comprehensive efficiency report
 
 #### AI Service
 - `GET /api/v1/ai/ai-status` - Check AI service status
@@ -157,6 +162,7 @@ The API integrates with OpenAI to provide:
 2. **Pattern Analysis**: Identify trends and anomalies in energy usage
 3. **Device Optimization**: Provide device-specific efficiency tips
 4. **Usage Comparisons**: Compare energy usage across different time periods
+5. **Efficiency Reports**: Comprehensive analysis with actionable insights
 
 ## Development
 
@@ -165,8 +171,8 @@ The API integrates with OpenAI to provide:
 app/
 ├── main.py              # FastAPI application entry point
 ├── config.py            # Configuration management
-├── database.py          # Database setup and connection
-├── models/              # SQLAlchemy models
+├── database.py          # MongoDB setup and connection
+├── models/              # Pydantic models for MongoDB
 │   ├── users.py
 │   ├── devices.py
 │   └── energy_data.py
@@ -206,7 +212,7 @@ docker run -p 8000:8000 energy-conservation-api
 
 ### Production Considerations
 
-1. **Database**: Use a managed PostgreSQL service
+1. **Database**: Use a managed MongoDB service (MongoDB Atlas, AWS DocumentDB, etc.)
 2. **Environment Variables**: Secure API keys and database credentials
 3. **Monitoring**: Add logging and health checks
 4. **Security**: Implement authentication and rate limiting
